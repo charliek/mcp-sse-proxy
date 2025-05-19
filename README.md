@@ -1,48 +1,88 @@
-# MCP SSE to Streamable HTTP Proxy
+# MCP SSE Proxy
 
-This project provides a proxy server that translates between the MCP (Model Context Protocol) SSE (Server-Sent Events) transport and the streamable HTTP transport. It allows SSE-based MCP clients (like Claude.ai) to communicate with HTTP-based MCP servers.
+A flexible proxy server that can translate between different MCP (Model Context Protocol) transport types:
+- SSE to Streamable HTTP (default)
+- SSE to SSE
 
-## How it Works
+## Features
 
-The proxy server:
-1. Exposes an SSE endpoint that MCP clients can connect to
-2. Receives JSON-RPC requests from SSE clients via HTTP POST
-3. Forwards these requests to a streamable HTTP MCP server
-4. Streams the responses back to the SSE client
+- Support for two proxy modes: streamable HTTP and SSE-to-SSE
+- Comprehensive logging with configurable levels and colors
+- Session management for concurrent connections
+- Heartbeat support for connection maintenance
+- Error handling and graceful shutdown
 
 ## Prerequisites
 
 - Node.js 18+
 - npm
-- A running MCP server using the streamable HTTP transport
+- A running MCP server (either streamable HTTP or SSE based)
 
 ## Installation
 
-1. Clone this repository
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
+```bash
+npm install
+```
+
+## Usage
+
+### Default Mode (SSE to Streamable HTTP)
+
+```bash
+# Development
+npm run dev
+
+# Production
+npm run build
+npm start
+```
+
+### SSE to SSE Mode
+
+```bash
+# Development
+npm run dev:sse
+
+# Production
+npm run build
+npm run start:sse
+```
+
+### Command-line Options
+
+```bash
+# General usage
+node dist/proxy.js [options]
+
+Options:
+  --mode          Proxy mode: streamable (HTTP) or sse (SSE-to-SSE)
+                  [choices: "streamable", "sse"] [default: "streamable"]
+  --port          Port to listen on [number] [default: 3000]
+  --endpoint      Upstream endpoint URL [string]
+                  Default: http://localhost:8080/mcp (streamable)
+                          http://localhost:3001/sse (sse)
+  --sse-endpoint  SSE endpoint path [string] [default: "/sse"]
+  --help          Show help [boolean]
+
+Examples:
+  # SSE to HTTP proxy on custom port
+  node dist/proxy.js --mode streamable --port 3500 --endpoint http://localhost:9000/mcp
+
+  # SSE to SSE proxy
+  node dist/proxy.js --mode sse --endpoint http://another-server.com/sse
+```
 
 ## Configuration
 
-### Server Configuration
-
-The proxy server can be configured by editing `src/proxy.ts`:
-
-- `STREAMABLE_HTTP_ENDPOINT`: URL of your streamable HTTP MCP server (default: `http://localhost:8080/mcp`)
-- `SSE_PORT`: Port for the proxy SSE server (default: `3000`)
-- `SSE_ENDPOINT`: Endpoint path for the SSE server (default: `/sse`)
-
 ### Logging Configuration
 
-The proxy includes a color-coded logging system that can be configured via:
+The proxy uses a flexible logging system that can be configured via `logging.config.json` or environment variables.
 
-1. **Configuration file** (`logging.config.json`):
+**Default logging.config.json:**
 ```json
 {
   "levels": {
-    "CONNECTION": { "enabled": true, "color": "green", "showPayload": false },
+    "CONNECTION": { "enabled": true, "color": "green", "showPayload": true },
     "REQUEST": { "enabled": true, "color": "cyan", "showPayload": true },
     "FORWARD": { "enabled": true, "color": "yellow", "showPayload": true },
     "RESPONSE": { "enabled": true, "color": "magenta", "showPayload": true },
@@ -56,28 +96,15 @@ The proxy includes a color-coded logging system that can be configured via:
 }
 ```
 
-Each category can have its own `showPayload` setting. If not specified, it falls back to the global `showPayloads` setting.
+### Environment Variables
 
-2. **Environment variables**:
-   - `LOG_LEVELS`: Comma-separated list of enabled categories (e.g., `CONNECTION,REQUEST,ERROR`)
-   - `LOG_COLORS`: Override colors (e.g., `CONNECTION:blue,ERROR:magenta`)
-   - `LOG_PAYLOADS`: Per-category payload settings (e.g., `REQUEST:true,RESPONSE:false`)
-   - `LOG_SHOW_PAYLOADS`: Set to `true` to show payloads globally (default for categories without specific settings)
-   - `LOG_SHOW_TIMESTAMPS`: Set to `false` to hide timestamps
-   - `LOG_CONFIG_FILE`: Path to a custom config file
+- `LOG_LEVELS`: Comma-separated list of enabled log levels (e.g., `CONNECTION,REQUEST,ERROR`)
+- `LOG_COLORS`: Comma-separated list of level:color pairs (e.g., `CONNECTION:blue,ERROR:red`)
+- `LOG_SHOW_PAYLOADS`: Global payload display setting (`true` or `false`)
+- `LOG_PAYLOADS`: Per-level payload settings (e.g., `REQUEST:true,RESPONSE:false`)
+- `LOG_SHOW_TIMESTAMPS`: Whether to show timestamps (`true` or `false`)
 
-### Log Categories
-
-- **CONNECTION** (green): Client connections/disconnections
-- **REQUEST** (cyan): Incoming requests from SSE clients
-- **FORWARD** (yellow): Outgoing requests to MCP server
-- **RESPONSE** (magenta): Responses from MCP server
-- **SSE** (blue): Messages sent through SSE to clients
-- **ERROR** (red): Error messages
-- **DEBUG** (gray): Detailed debugging information
-- **SYSTEM** (white): Server startup/shutdown messages
-
-### Example Usage
+### Example Environment Variable Usage
 
 ```bash
 # Show payloads only for REQUEST and FORWARD categories
@@ -90,24 +117,37 @@ LOG_LEVELS=CONNECTION,REQUEST,FORWARD,RESPONSE,SSE,DEBUG LOG_SHOW_PAYLOADS=true 
 LOG_PAYLOADS=REQUEST:true,ERROR:true LOG_LEVELS=CONNECTION,REQUEST,ERROR,SYSTEM npm run dev
 ```
 
-## Usage
+## Architecture
 
-### Development mode
+### Streamable Mode (SSE → HTTP)
+1. SSE clients connect to `/sse` endpoint
+2. Server creates a session and sends an `endpoint` event with path
+3. Clients POST JSON-RPC messages to `/messages/{sessionId}`
+4. Proxy forwards requests to streamable HTTP MCP server
+5. Streaming responses are sent back through SSE connection
 
-Run the proxy in development mode with TypeScript:
+### SSE Mode (SSE → SSE)
+1. SSE clients connect to `/sse` endpoint
+2. Server creates a session and upstream SSE connection
+3. Messages are relayed bidirectionally between client and upstream
+4. Connection lifecycle is managed for both sides
 
-```bash
-npm run dev
+```
+[SSE Client] <--SSE--> [This Proxy] <--HTTP Stream or SSE--> [MCP Server]
 ```
 
-### Production mode
+The proxy handles:
+- SSE connection management
+- Session tracking
+- Request/response forwarding
+- Error handling
+- Connection heartbeats
 
-Build and run in production mode:
+## API Endpoints
 
-```bash
-npm run build
-npm start
-```
+- `GET /sse` - SSE connection endpoint
+- `POST /messages/:sessionId` - Message forwarding endpoint
+- `GET /health` - Health check endpoint (returns status, mode, and connection count)
 
 ## Connecting Clients
 
@@ -119,43 +159,49 @@ After starting the proxy, you can connect MCP SSE clients to it:
 
 ### Example with Claude.ai
 
-1. Start your streamable HTTP MCP server at `http://localhost:8080/mcp`
-2. Start this proxy server
+1. Start your MCP server (either streamable HTTP or SSE)
+2. Start this proxy server in the appropriate mode
 3. In Claude.ai, go to integrations
 4. Add the SSE endpoint URL: `http://localhost:3000/sse`
-
-## Architecture
-
-```
-[SSE Client] <--SSE--> [This Proxy] <--HTTP Stream--> [MCP Server]
-```
-
-The proxy handles:
-- SSE connection management
-- Session tracking
-- Request/response forwarding
-- Error handling
-- Connection heartbeats
-
-## Health Check
-
-The proxy provides a health check endpoint at `/health` that returns:
-- Server status
-- Number of active connections
-
-## Troubleshooting
-
-- Check console logs for detailed connection and message information
-- Verify your streamable HTTP MCP server is running and accessible
-- Ensure proper firewall/network access if running on different machines
-- Check that the SSE client is sending valid JSON-RPC requests
 
 ## Error Handling
 
 The proxy handles various error scenarios:
-- Connection failures to the MCP server
+- Connection failures to the upstream server
 - Invalid JSON-RPC messages
 - Stream errors
 - Client disconnections
+- Session not found errors
 
 All errors are logged to the console and appropriate error responses are sent back to the client.
+
+## Development
+
+```bash
+# Install dependencies
+npm install
+
+# Run in development mode (default: streamable)
+npm run dev
+
+# Run in SSE mode
+npm run dev:sse
+
+# Build TypeScript
+npm run build
+
+# Run built version
+npm start
+```
+
+## Troubleshooting
+
+- Check console logs for detailed connection and message information
+- Verify your MCP server is running and accessible
+- Ensure proper firewall/network access if running on different machines
+- Check that the SSE client is sending valid JSON-RPC requests
+- Use the health endpoint to check status and connection count
+
+## License
+
+ISC

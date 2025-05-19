@@ -1,13 +1,17 @@
 {
   "name": "mcp-sse-proxy",
   "version": "1.0.0",
-  "description": "MCP proxy to convert SSE to Streamable HTTP",
+  "description": "MCP proxy for SSE to Streamable HTTP or SSE to SSE",
   "main": "dist/proxy.js",
   "type": "module",
   "scripts": {
     "build": "tsc",
     "start": "node --experimental-specifier-resolution=node dist/proxy.js",
+    "start:streamable": "node --experimental-specifier-resolution=node dist/proxy.js --mode streamable",
+    "start:sse": "node --experimental-specifier-resolution=node dist/proxy.js --mode sse",
     "dev": "tsx src/proxy.ts",
+    "dev:streamable": "tsx src/proxy.ts --mode streamable",
+    "dev:sse": "tsx src/proxy.ts --mode sse",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
@@ -20,6 +24,7 @@
   "license": "ISC",
   "devDependencies": {
     "@types/cors": "^2.8.17",
+    "@types/eventsource": "^1.1.15",
     "@types/express": "^4.17.21",
     "@types/node": "^20.11.25",
     "ts-node": "^10.9.2",
@@ -29,9 +34,12 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^0.5.0",
     "@types/axios": "^0.9.36",
+    "@types/yargs": "^17.0.33",
     "axios": "^1.9.0",
     "chalk": "^5.4.1",
     "cors": "^2.8.5",
-    "express": "^4.18.2"
+    "eventsource": "^4.0.0",
+    "express": "^4.18.2",
+    "yargs": "^17.7.2"
   }
 }

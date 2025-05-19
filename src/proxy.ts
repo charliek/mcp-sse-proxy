@@ -1,57 +1,90 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import axios from 'axios';
+import yargs from 'yargs';
+import { hideBin } from 'yargs/helpers';
 import { logger, LogCategory } from './logger.js';
+import { ProxyStrategy, ProxyConfig } from './strategies/ProxyStrategy.js';
+import { StreamableHttpStrategy } from './strategies/StreamableHttpStrategy.js';
+import { SSEToSSEStrategy } from './strategies/SSEToSSEStrategy.js';
 
-// Configuration
-const STREAMABLE_HTTP_ENDPOINT = "http://localhost:8080/mcp";
-const SSE_PORT = 3000;
-const SSE_ENDPOINT = "/sse";
+// Parse command-line arguments
+const argv = yargs(hideBin(process.argv))
+  .option('mode', {
+    type: 'string',
+    choices: ['streamable', 'sse'],
+    default: 'streamable',
+    description: 'Proxy mode: streamable (HTTP) or sse (SSE-to-SSE)'
+  })
+  .option('port', {
+    type: 'number',
+    default: 3000,
+    description: 'Port to listen on'
+  })
+  .option('endpoint', {
+    type: 'string',
+    description: 'Upstream endpoint URL'
+  })
+  .option('sse-endpoint', {
+    type: 'string',
+    default: '/sse',
+    description: 'SSE endpoint path'
+  })
+  .help()
+  .argv as any;
+
+// Default endpoints based on mode
+const DEFAULT_ENDPOINTS: Record<string, string> = {
+  streamable: 'http://localhost:8080/mcp',
+  sse: 'http://localhost:8080/mcp'
+};
+
+const endpoint = argv.endpoint || DEFAULT_ENDPOINTS[argv.mode];
+const port = argv.port;
+const sseEndpoint = argv.sseEndpoint;
 
 // Create Express app
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-// Store active SSE connections and their associated axios instances
+// Store active SSE connections and their associated info
 interface ConnectionInfo {
   response: Response;
   sessionId: string;
+  strategy: ProxyStrategy;
 }
 
 const connections = new Map<string, ConnectionInfo>();
 
-// Helper function to make HTTP requests to the streamable endpoint
-async function sendToStreamableEndpoint(method: string, params: any, id: string | number): Promise<NodeJS.ReadableStream> {
-  const request = {
-    jsonrpc: '2.0',
-    method,
-    params,
-    id
-  };
-
-  logger.forward(`Sending to MCP server`, request);
-
-  const response = await axios.post(STREAMABLE_HTTP_ENDPOINT, request, {
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    responseType: 'stream'
-  });
-
-  return response.data as NodeJS.ReadableStream;
+// Select strategy based on mode
+function createStrategy(mode: string): ProxyStrategy {
+  switch (mode) {
+    case 'sse':
+      return new SSEToSSEStrategy();
+    case 'streamable':
+    default:
+      return new StreamableHttpStrategy();
+  }
 }
 
 async function main() {
   try {
-    logger.system(`Starting MCP proxy on port ${SSE_PORT}`);
-    logger.system(`SSE endpoint: http://localhost:${SSE_PORT}${SSE_ENDPOINT}`);
-    logger.system(`Forwarding to Streamable HTTP: ${STREAMABLE_HTTP_ENDPOINT}`);
+    logger.system(`Starting MCP proxy in ${argv.mode} mode on port ${port}`);
+    logger.system(`SSE endpoint: http://localhost:${port}${sseEndpoint}`);
+    logger.system(`Upstream endpoint: ${endpoint}`);
+
+    // Create strategy instance
+    const strategy = createStrategy(argv.mode);
+    const config: ProxyConfig = {
+      endpoint,
+      port,
+      sseEndpoint,
+      logger
+    };
+    strategy.configure(config);
 
     // SSE endpoint for MCP clients to connect to
-    app.get(SSE_ENDPOINT, async (req: Request, res: Response) => {
+    app.get(sseEndpoint, async (req: Request, res: Response) => {
       const sessionId = Date.now().toString();
       logger.connection(`New SSE connection initiated: ${sessionId}`);
       
@@ -67,19 +100,23 @@ async function main() {
         // Store the connection
         const connectionInfo: ConnectionInfo = {
           response: res,
-          sessionId
+          sessionId,
+          strategy
         };
         connections.set(sessionId, connectionInfo);
         
         // Send initial endpoint event (MCP SSE protocol)
-        // The endpoint event tells the client where to send messages
-        // Send just the path component - client should append this to the SSE URL
-        const endpoint = `messages/${sessionId}`;
-        const endpointEvent = `event: endpoint\ndata: ${endpoint}\n\n`;
+        const endpointPath = `messages/${sessionId}`;
+        const endpointEvent = `event: endpoint\ndata: ${endpointPath}\n\n`;
         res.write(endpointEvent);
         
         logger.connection(`Client ${sessionId} connected`);
-        logger.sse(`Sent SSE endpoint event`, { event: 'endpoint', data: endpoint });
+        logger.sse(`Sent SSE endpoint event`, { event: 'endpoint', data: endpointPath });
+        
+        // Let the strategy handle the connection if needed
+        if (strategy.handleConnection) {
+          await strategy.handleConnection(sessionId, res);
+        }
         
         // Keep the connection alive
         const heartbeatInterval = setInterval(() => {
@@ -97,9 +134,13 @@ async function main() {
           connections.delete(sessionId);
           logger.connection(`Client ${sessionId} disconnected`);
         });
-      } catch (error) {
-        logger.error(`Failed to setup SSE connection for ${sessionId}`, error);
-        res.write(`event: error\ndata: ${JSON.stringify({ error: 'Failed to setup connection' })}\n\n`);
+      } catch (error: any) {
+        logger.error(`Failed to setup SSE connection for ${sessionId}`, {
+          message: error.message,
+          stack: error.stack,
+          name: error.name
+        });
+        res.write(`event: error\ndata: ${JSON.stringify({ error: error.message || 'Failed to setup connection' })}\n\n`);
         res.end();
         return;
       }
@@ -116,95 +157,47 @@ async function main() {
       }
       
       try {
-        const { jsonrpc, method, params, id } = req.body;
-        
-        logger.request(`Received message from client ${sessionId}: ${method} (id: ${id})`, req.body);
-        
-        // Forward the request to the streamable endpoint
-        const streamResponse = await sendToStreamableEndpoint(method, params, id);
-        
-        // Process the streaming response
-        streamResponse.on('data', (chunk: Buffer) => {
-          try {
-            // The streamable endpoint might send multiple JSON-RPC responses
-            const lines = chunk.toString().split('\n').filter(line => line.trim());
-            
-            for (const line of lines) {
-              try {
-                const response = JSON.parse(line);
-                logger.response(`Received from MCP server`, response);
-                
-                // Send the response back through the SSE connection
-                connection.response.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
-                logger.sse(`Sent to SSE client`, response);
-              } catch (parseError) {
-                // If line is not valid JSON, skip it
-                logger.debug(`Invalid JSON in stream response: ${line}`);
-              }
-            }
-          } catch (error) {
-            logger.error(`Error processing stream chunk`, error);
-          }
-        });
-        
-        streamResponse.on('end', () => {
-          logger.debug(`Stream ended for request ${id} (method: ${method})`);
-        });
-        
-        streamResponse.on('error', (error: Error) => {
-          logger.error(`Stream error for request ${id}`, error);
-          
-          // Send error response through SSE
-          const errorResponse = {
-            jsonrpc: '2.0',
-            id,
-            error: {
-              code: -32603,
-              message: error.message || 'Internal error',
-              data: error.stack
-            }
-          };
-          
-          connection.response.write(`event: message\ndata: ${JSON.stringify(errorResponse)}\n\n`);
-        });
+        // Let the strategy handle the message
+        await connection.strategy.handleMessage(sessionId, req.body, connection.response);
         
         // Respond to the POST request with empty 202 as per MCP SSE spec
         res.status(202).send();
-      } catch (error: any) {
-        logger.error(`Error forwarding request from ${sessionId}`, error);
-        
-        // Send error response through SSE
-        const errorResponse = {
-          jsonrpc: '2.0',
-          id: req.body.id,
-          error: {
-            code: -32603,
-            message: error.message || 'Internal error',
-            data: error.stack
-          }
-        };
-        
-        connection.response.write(`event: message\ndata: ${JSON.stringify(errorResponse)}\n\n`);
+      } catch (error) {
+        logger.error(`Error handling message from ${sessionId}`, error);
         res.status(202).send();
       }
     });
 
     // Health check endpoint
     app.get('/health', (req: Request, res: Response) => {
-      const status = { status: 'healthy', connections: connections.size };
+      const status = { 
+        status: 'healthy', 
+        mode: argv.mode,
+        connections: connections.size 
+      };
       logger.debug('Health check requested', status);
       res.json(status);
     });
 
     // Start the server
-    app.listen(SSE_PORT, '0.0.0.0', () => {
-      logger.system(`Proxy server running on http://0.0.0.0:${SSE_PORT}`);
-      logger.system(`SSE endpoint: http://0.0.0.0:${SSE_PORT}${SSE_ENDPOINT}`);
+    app.listen(port, '0.0.0.0', () => {
+      logger.system(`Proxy server running on http://0.0.0.0:${port}`);
+      logger.system(`SSE endpoint: http://0.0.0.0:${port}${sseEndpoint}`);
+      logger.system(`Mode: ${argv.mode}`);
     });
     
     // Handle shutdown
     process.on("SIGINT", async () => {
       logger.system("Shutting down proxy...");
+      
+      // Let strategies clean up
+      const strategies = new Set([...connections.values()].map(c => c.strategy));
+      for (const s of strategies) {
+        if (s.shutdown) {
+          await s.shutdown();
+        }
+      }
+      
       process.exit(0);
     });
   } catch (error) {
