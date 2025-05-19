@@ -148,3 +148,6 @@ build/
 # Temporary files
 tmp/
 temp/
+
+# Local logging configuration
+logging.config.local.json

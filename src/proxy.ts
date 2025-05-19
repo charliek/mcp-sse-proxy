@@ -3,6 +3,7 @@ import cors from 'cors';
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import axios from 'axios';
+import { logger, LogCategory } from './logger.js';
 
 // Configuration
 const STREAMABLE_HTTP_ENDPOINT = "http://localhost:8080/mcp";
@@ -31,6 +32,8 @@ async function sendToStreamableEndpoint(method: string, params: any, id: string 
     id
   };
 
+  logger.forward(`Sending to MCP server`, request);
+
   const response = await axios.post(STREAMABLE_HTTP_ENDPOINT, request, {
     headers: {
       'Content-Type': 'application/json'
@@ -43,14 +46,14 @@ async function sendToStreamableEndpoint(method: string, params: any, id: string 
 
 async function main() {
   try {
-    console.log(`Starting MCP proxy on port ${SSE_PORT}`);
-    console.log(`SSE endpoint: http://localhost:${SSE_PORT}${SSE_ENDPOINT}`);
-    console.log(`Forwarding to Streamable HTTP: ${STREAMABLE_HTTP_ENDPOINT}`);
+    logger.system(`Starting MCP proxy on port ${SSE_PORT}`);
+    logger.system(`SSE endpoint: http://localhost:${SSE_PORT}${SSE_ENDPOINT}`);
+    logger.system(`Forwarding to Streamable HTTP: ${STREAMABLE_HTTP_ENDPOINT}`);
 
     // SSE endpoint for MCP clients to connect to
     app.get(SSE_ENDPOINT, async (req: Request, res: Response) => {
       const sessionId = Date.now().toString();
-      console.log(`New SSE connection initiated: ${sessionId}`);
+      logger.connection(`New SSE connection initiated: ${sessionId}`);
       
       // Set SSE headers
       res.writeHead(200, {
@@ -72,9 +75,11 @@ async function main() {
         // The endpoint event tells the client where to send messages
         // Send just the path component - client should append this to the SSE URL
         const endpoint = `messages/${sessionId}`;
-        res.write(`event: endpoint\ndata: ${endpoint}\n\n`);
+        const endpointEvent = `event: endpoint\ndata: ${endpoint}\n\n`;
+        res.write(endpointEvent);
         
-        console.log(`Client ${sessionId} connected, endpoint: ${endpoint}`);
+        logger.connection(`Client ${sessionId} connected`);
+        logger.sse(`Sent SSE endpoint event`, { event: 'endpoint', data: endpoint });
         
         // Keep the connection alive
         const heartbeatInterval = setInterval(() => {
@@ -82,6 +87,7 @@ async function main() {
             clearInterval(heartbeatInterval);
           } else {
             res.write(':ping\n\n');
+            logger.debug(`Sent heartbeat to ${sessionId}`);
           }
         }, 30000); // Send heartbeat every 30 seconds
         
@@ -89,10 +95,10 @@ async function main() {
         req.on('close', () => {
           clearInterval(heartbeatInterval);
           connections.delete(sessionId);
-          console.log(`Client ${sessionId} disconnected`);
+          logger.connection(`Client ${sessionId} disconnected`);
         });
       } catch (error) {
-        console.error(`Failed to setup SSE connection for ${sessionId}:`, error);
+        logger.error(`Failed to setup SSE connection for ${sessionId}`, error);
         res.write(`event: error\ndata: ${JSON.stringify({ error: 'Failed to setup connection' })}\n\n`);
         res.end();
         return;
@@ -105,13 +111,14 @@ async function main() {
       const connection = connections.get(sessionId);
       
       if (!connection) {
+        logger.error(`Session not found: ${sessionId}`);
         return res.status(404).json({ error: 'Session not found' });
       }
       
       try {
         const { jsonrpc, method, params, id } = req.body;
         
-        console.log(`Received message from client ${sessionId}:`, { method, id });
+        logger.request(`Received message from client ${sessionId}: ${method} (id: ${id})`, req.body);
         
         // Forward the request to the streamable endpoint
         const streamResponse = await sendToStreamableEndpoint(method, params, id);
@@ -125,25 +132,27 @@ async function main() {
             for (const line of lines) {
               try {
                 const response = JSON.parse(line);
+                logger.response(`Received from MCP server`, response);
                 
                 // Send the response back through the SSE connection
                 connection.response.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
+                logger.sse(`Sent to SSE client`, response);
               } catch (parseError) {
                 // If line is not valid JSON, skip it
-                console.warn(`Invalid JSON in stream response: ${line}`);
+                logger.debug(`Invalid JSON in stream response: ${line}`);
               }
             }
           } catch (error) {
-            console.error(`Error processing stream chunk:`, error);
+            logger.error(`Error processing stream chunk`, error);
           }
         });
         
         streamResponse.on('end', () => {
-          console.log(`Stream ended for request ${id}`);
+          logger.debug(`Stream ended for request ${id} (method: ${method})`);
         });
         
         streamResponse.on('error', (error: Error) => {
-          console.error(`Stream error for request ${id}:`, error);
+          logger.error(`Stream error for request ${id}`, error);
           
           // Send error response through SSE
           const errorResponse = {
@@ -162,7 +171,7 @@ async function main() {
         // Respond to the POST request with empty 202 as per MCP SSE spec
         res.status(202).send();
       } catch (error: any) {
-        console.error(`Error forwarding request from ${sessionId}:`, error);
+        logger.error(`Error forwarding request from ${sessionId}`, error);
         
         // Send error response through SSE
         const errorResponse = {
@@ -182,24 +191,28 @@ async function main() {
 
     // Health check endpoint
     app.get('/health', (req: Request, res: Response) => {
-      res.json({ status: 'healthy', connections: connections.size });
+      const status = { status: 'healthy', connections: connections.size };
+      logger.debug('Health check requested', status);
+      res.json(status);
     });
 
     // Start the server
     app.listen(SSE_PORT, '0.0.0.0', () => {
-      console.log(`Proxy server running on http://0.0.0.0:${SSE_PORT}`);
-      console.log(`SSE endpoint: http://0.0.0.0:${SSE_PORT}${SSE_ENDPOINT}`);
+      logger.system(`Proxy server running on http://0.0.0.0:${SSE_PORT}`);
+      logger.system(`SSE endpoint: http://0.0.0.0:${SSE_PORT}${SSE_ENDPOINT}`);
     });
     
     // Handle shutdown
     process.on("SIGINT", async () => {
-      console.log("Shutting down proxy...");
+      logger.system("Shutting down proxy...");
       process.exit(0);
     });
   } catch (error) {
-    console.error("Error starting proxy:", error);
+    logger.error("Error starting proxy", error);
     process.exit(1);
   }
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  logger.error("Fatal error", error);
+});
