@@ -3,6 +3,7 @@ import cors from 'cors';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { logger, LogCategory } from './logger.js';
+import axios from 'axios';
 import { ProxyStrategy, ProxyConfig } from './strategies/ProxyStrategy.js';
 import { StreamableHttpStrategy } from './strategies/StreamableHttpStrategy.js';
 import { SSEToSSEStrategy } from './strategies/SSEToSSEStrategy.js';
@@ -41,6 +42,7 @@ const DEFAULT_ENDPOINTS: Record<string, string> = {
 const endpoint = argv.endpoint || DEFAULT_ENDPOINTS[argv.mode];
 const port = argv.port;
 const sseEndpoint = argv.sseEndpoint;
+const upstreamOrigin = new URL(endpoint).origin;
 
 // Create Express app
 const app = express();
@@ -170,13 +172,40 @@ async function main() {
 
     // Health check endpoint
     app.get('/health', (req: Request, res: Response) => {
-      const status = { 
-        status: 'healthy', 
+      const status = {
+        status: 'healthy',
         mode: argv.mode,
-        connections: connections.size 
+        connections: connections.size
       };
       logger.debug('Health check requested', status);
       res.json(status);
+    });
+
+    // Proxy any other HTTP requests directly to the upstream origin
+    app.use(async (req: Request, res: Response) => {
+      const targetUrl = new URL(req.originalUrl, upstreamOrigin).toString();
+      try {
+        logger.http(`Proxying ${req.method} ${req.originalUrl} -> ${targetUrl}`, req.body);
+
+        const response = await axios.request({
+          url: targetUrl,
+          method: req.method as any,
+          headers: { ...req.headers, host: new URL(upstreamOrigin).host },
+          data: req.body,
+          responseType: 'stream',
+          validateStatus: () => true
+        });
+
+        res.status(response.status);
+        for (const [key, value] of Object.entries(response.headers)) {
+          res.setHeader(key, value as any);
+        }
+
+        response.data.pipe(res);
+      } catch (error: any) {
+        logger.error(`Error proxying request to ${targetUrl}`, error);
+        res.status(502).json({ error: 'Proxy error' });
+      }
     });
 
     // Start the server

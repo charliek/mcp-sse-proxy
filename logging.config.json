@@ -5,6 +5,7 @@
     "FORWARD": { "enabled": true, "color": "yellow", "showPayload": true },
     "RESPONSE": { "enabled": true, "color": "magenta", "showPayload": true },
     "SSE": { "enabled": true, "color": "blue", "showPayload": false },
+    "HTTP": { "enabled": true, "color": "whiteBright", "showPayload": true },
     "ERROR": { "enabled": true, "color": "red", "showPayload": true },
     "DEBUG": { "enabled": false, "color": "gray", "showPayload": true },
     "SYSTEM": { "enabled": true, "color": "white", "showPayload": false }
