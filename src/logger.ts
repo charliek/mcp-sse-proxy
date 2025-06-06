@@ -13,6 +13,7 @@ export enum LogCategory {
   FORWARD = 'FORWARD',
   RESPONSE = 'RESPONSE',
   SSE = 'SSE',
+  HTTP = 'HTTP',
   ERROR = 'ERROR',
   DEBUG = 'DEBUG',
   SYSTEM = 'SYSTEM'
@@ -40,6 +41,7 @@ const DEFAULT_CONFIG: LogConfig = {
     [LogCategory.FORWARD]: { enabled: true, color: 'yellow', showPayload: true },
     [LogCategory.RESPONSE]: { enabled: true, color: 'magenta', showPayload: true },
     [LogCategory.SSE]: { enabled: false, color: 'blue', showPayload: false },
+    [LogCategory.HTTP]: { enabled: true, color: 'whiteBright', showPayload: true },
     [LogCategory.ERROR]: { enabled: true, color: 'red', showPayload: true },
     [LogCategory.DEBUG]: { enabled: false, color: 'gray', showPayload: true },
     [LogCategory.SYSTEM]: { enabled: true, color: 'white' }
@@ -217,6 +219,10 @@ export class Logger {
 
   sse(message: string, payload?: any): void {
     this.log(LogCategory.SSE, message, payload);
+  }
+
+  http(message: string, payload?: any): void {
+    this.log(LogCategory.HTTP, message, payload);
   }
 
   error(message: string, payload?: any): void {

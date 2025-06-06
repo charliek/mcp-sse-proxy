@@ -8,6 +8,7 @@ A flexible proxy server that can translate between different MCP (Model Context 
 
 - Support for two proxy modes: streamable HTTP and SSE-to-SSE
 - Comprehensive logging with configurable levels and colors
+- Direct HTTP pass-through for non-MCP routes
 - Session management for concurrent connections
 - Heartbeat support for connection maintenance
 - Error handling and graceful shutdown
@@ -87,6 +88,7 @@ The proxy uses a flexible logging system that can be configured via `logging.con
     "FORWARD": { "enabled": true, "color": "yellow", "showPayload": true },
     "RESPONSE": { "enabled": true, "color": "magenta", "showPayload": true },
     "SSE": { "enabled": true, "color": "blue", "showPayload": false },
+    "HTTP": { "enabled": true, "color": "whiteBright", "showPayload": true },
     "ERROR": { "enabled": true, "color": "red", "showPayload": true },
     "DEBUG": { "enabled": false, "color": "gray", "showPayload": true },
     "SYSTEM": { "enabled": true, "color": "white", "showPayload": false }
@@ -142,12 +144,14 @@ The proxy handles:
 - Request/response forwarding
 - Error handling
 - Connection heartbeats
+- Other HTTP routes are proxied directly to the upstream server
 
 ## API Endpoints
 
 - `GET /sse` - SSE connection endpoint
 - `POST /messages/:sessionId` - Message forwarding endpoint
 - `GET /health` - Health check endpoint (returns status, mode, and connection count)
+- Any other route - Proxied directly to the upstream server
 
 ## Connecting Clients
 
