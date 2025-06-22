@@ -151,3 +151,6 @@ temp/
 
 # Local logging configuration
 logging.config.local.json
+
+# Claude AI configuration
+.claude/
