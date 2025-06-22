@@ -1,30 +1,29 @@
-import { Response } from 'express';
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { ProxyStrategy, ProxyConfig } from './ProxyStrategy.js';
+import { OutputStrategy, OutputConfig } from './OutputStrategy.js';
+import { SessionInfo } from './InputStrategy.js';
 import { z } from 'zod';
-import { NotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { EventSource as EventSourcePolyfill } from 'eventsource';
 
 // Set up EventSource globally
 (global as any).EventSource = EventSourcePolyfill;
 
-export class SSEToSSEStrategy implements ProxyStrategy {
+export class SSEOutputStrategy implements OutputStrategy {
   name = 'sse';
-  private config!: ProxyConfig;
+  private config!: OutputConfig;
   private upstreamClients = new Map<string, Client>();
 
-  configure(config: ProxyConfig): void {
+  configure(config: OutputConfig): void {
     this.config = config;
   }
 
-  async handleConnection(sessionId: string, sseResponse: Response): Promise<void> {
+  async handleConnection(sessionInfo: SessionInfo): Promise<void> {
     try {
       // Create upstream SSE client
       const transport = new SSEClientTransport(new URL(this.config.endpoint));
       const client = new Client(
         {
-          name: `proxy-client-${sessionId}`,
+          name: `proxy-client-${sessionInfo.sessionId}`,
           version: "1.0.0",
         },
         {
@@ -33,14 +32,14 @@ export class SSEToSSEStrategy implements ProxyStrategy {
       );
 
       // Store the client for this session
-      this.upstreamClients.set(sessionId, client);
+      this.upstreamClients.set(sessionInfo.sessionId, client);
 
       this.config.logger.forward(`Connecting to upstream SSE server: ${this.config.endpoint}`);
 
       // Connect to upstream server
       await client.connect(transport);
 
-      this.config.logger.connection(`Connected to upstream SSE server for session ${sessionId}`);
+      this.config.logger.connection(`Connected to upstream SSE server for session ${sessionInfo.sessionId}`);
 
       // Set up notification handler from upstream
       // We need to use the fallback handler since we want to handle all notifications
@@ -51,15 +50,14 @@ export class SSEToSSEStrategy implements ProxyStrategy {
           params: notification.params
         };
         this.config.logger.response(`Received notification from upstream`, message);
-        sseResponse.write(`event: message\ndata: ${JSON.stringify(message)}\n\n`);
-        this.config.logger.sse(`Forwarded notification to client`, message);
+        sessionInfo.inputStrategy.sendResponse(sessionInfo, message);
       };
 
       // Note: MCP SDK client doesn't handle incoming requests from server
       // This is a limitation - SSE-to-SSE proxy can only forward client->server not server->client requests
 
     } catch (error: any) {
-      this.config.logger.error(`Failed to connect to upstream SSE server for session ${sessionId}`, {
+      this.config.logger.error(`Failed to connect to upstream SSE server for session ${sessionInfo.sessionId}`, {
         message: error.message,
         stack: error.stack,
         name: error.name,
@@ -69,11 +67,11 @@ export class SSEToSSEStrategy implements ProxyStrategy {
     }
   }
 
-  async handleMessage(sessionId: string, request: any, sseResponse: Response): Promise<void> {
-    const client = this.upstreamClients.get(sessionId);
+  async handleMessage(sessionInfo: SessionInfo, request: any): Promise<void> {
+    const client = this.upstreamClients.get(sessionInfo.sessionId);
     
     if (!client) {
-      this.config.logger.error(`No upstream client found for session: ${sessionId}`);
+      this.config.logger.error(`No upstream client found for session: ${sessionInfo.sessionId}`);
       const errorResponse = {
         jsonrpc: '2.0',
         id: request.id,
@@ -82,7 +80,7 @@ export class SSEToSSEStrategy implements ProxyStrategy {
           message: 'No upstream connection found'
         }
       };
-      sseResponse.write(`event: message\ndata: ${JSON.stringify(errorResponse)}\n\n`);
+      sessionInfo.inputStrategy.sendResponse(sessionInfo, errorResponse);
       return;
     }
 
@@ -101,8 +99,7 @@ export class SSEToSSEStrategy implements ProxyStrategy {
           result: response
         };
         this.config.logger.response(`Received response from upstream`, jsonRpcResponse);
-        sseResponse.write(`event: message\ndata: ${JSON.stringify(jsonRpcResponse)}\n\n`);
-        this.config.logger.sse(`Sent response to client`, jsonRpcResponse);
+        sessionInfo.inputStrategy.sendResponse(sessionInfo, jsonRpcResponse);
       } else {
         // It's a notification
         await client.notification({ method, params });
@@ -121,7 +118,7 @@ export class SSEToSSEStrategy implements ProxyStrategy {
         }
       };
       
-      sseResponse.write(`event: message\ndata: ${JSON.stringify(errorResponse)}\n\n`);
+      sessionInfo.inputStrategy.sendResponse(sessionInfo, errorResponse);
     }
   }
 

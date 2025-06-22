@@ -1,15 +1,18 @@
 # MCP SSE Proxy
 
-A flexible proxy server that can translate between different MCP (Model Context Protocol) transport types:
-- SSE to Streamable HTTP (default)
-- SSE to SSE
+A flexible bidirectional proxy server that can translate between different MCP (Model Context Protocol) transport types. Supports all combinations of:
+- SSE input → Streamable HTTP output
+- SSE input → SSE output
+- Streamable HTTP input → Streamable HTTP output
+- Streamable HTTP input → SSE output
 
 ## Features
 
-- Support for two proxy modes: streamable HTTP and SSE-to-SSE
+- Bidirectional proxy supporting both SSE and streamable HTTP as input and output
+- All four transport combinations supported
 - Comprehensive logging with configurable levels and colors
 - Session management for concurrent connections
-- Heartbeat support for connection maintenance
+- Heartbeat support for SSE connections
 - Error handling and graceful shutdown
 
 ## Prerequisites
@@ -26,10 +29,10 @@ npm install
 
 ## Usage
 
-### Default Mode (SSE to Streamable HTTP)
+### Quick Start
 
 ```bash
-# Development
+# Development (default: SSE input → Streamable HTTP output)
 npm run dev
 
 # Production
@@ -37,15 +40,20 @@ npm run build
 npm start
 ```
 
-### SSE to SSE Mode
+### Specific Transport Combinations
 
 ```bash
-# Development
-npm run dev:sse
+# SSE input → Streamable HTTP output
+npm run dev:sse-to-http
 
-# Production
-npm run build
-npm run start:sse
+# SSE input → SSE output
+npm run dev:sse-to-sse
+
+# Streamable HTTP input → Streamable HTTP output
+npm run dev:http-to-http
+
+# Streamable HTTP input → SSE output
+npm run dev:http-to-sse
 ```
 
 ### Command-line Options
@@ -55,21 +63,27 @@ npm run start:sse
 node dist/proxy.js [options]
 
 Options:
-  --mode          Proxy mode: streamable (HTTP) or sse (SSE-to-SSE)
-                  [choices: "streamable", "sse"] [default: "streamable"]
-  --port          Port to listen on [number] [default: 3000]
-  --endpoint      Upstream endpoint URL [string]
-                  Default: http://localhost:8080/mcp (streamable)
-                          http://localhost:3001/sse (sse)
-  --sse-endpoint  SSE endpoint path [string] [default: "/sse"]
-  --help          Show help [boolean]
+  --input-mode     Input mode: how clients connect to proxy
+                   [choices: "streamable", "sse"] [default: "sse"]
+  --output-mode    Output mode: how proxy connects to upstream
+                   [choices: "streamable", "sse"] [default: "streamable"]
+  --port           Port to listen on [number] [default: 3000]
+  --endpoint       Upstream endpoint URL [string]
+                   Default: http://localhost:8080/mcp (streamable output)
+                           http://localhost:8080/sse (sse output)
+  --sse-endpoint   SSE endpoint path [string] [default: "/sse"]
+  --http-endpoint  HTTP endpoint path for streamable input [string] [default: "/mcp"]
+  --help           Show help [boolean]
 
 Examples:
-  # SSE to HTTP proxy on custom port
-  node dist/proxy.js --mode streamable --port 3500 --endpoint http://localhost:9000/mcp
+  # SSE input to HTTP output on custom port
+  node dist/proxy.js --input-mode sse --output-mode streamable --port 3500 --endpoint http://localhost:9000/mcp
 
-  # SSE to SSE proxy
-  node dist/proxy.js --mode sse --endpoint http://another-server.com/sse
+  # HTTP input to SSE output
+  node dist/proxy.js --input-mode streamable --output-mode sse --endpoint http://another-server.com/sse
+
+  # Full HTTP proxy
+  node dist/proxy.js --input-mode streamable --output-mode streamable
 ```
 
 ## Configuration
@@ -119,50 +133,80 @@ LOG_PAYLOADS=REQUEST:true,ERROR:true LOG_LEVELS=CONNECTION,REQUEST,ERROR,SYSTEM 
 
 ## Architecture
 
-### Streamable Mode (SSE → HTTP)
+The proxy supports four transport combinations:
+
+### 1. SSE Input → Streamable HTTP Output
 1. SSE clients connect to `/sse` endpoint
 2. Server creates a session and sends an `endpoint` event with path
 3. Clients POST JSON-RPC messages to `/messages/{sessionId}`
 4. Proxy forwards requests to streamable HTTP MCP server
 5. Streaming responses are sent back through SSE connection
 
-### SSE Mode (SSE → SSE)
+### 2. SSE Input → SSE Output
 1. SSE clients connect to `/sse` endpoint
 2. Server creates a session and upstream SSE connection
 3. Messages are relayed bidirectionally between client and upstream
 4. Connection lifecycle is managed for both sides
 
+### 3. Streamable HTTP Input → Streamable HTTP Output
+1. HTTP clients POST to `/mcp` endpoint
+2. Server forwards the request to upstream HTTP server
+3. Streaming response is relayed back to client
+4. Connection is closed after response completes
+
+### 4. Streamable HTTP Input → SSE Output
+1. HTTP clients POST to `/mcp` endpoint
+2. Server creates upstream SSE connection
+3. Request is forwarded through SSE
+4. Response is streamed back via HTTP
+
 ```
-[SSE Client] <--SSE--> [This Proxy] <--HTTP Stream or SSE--> [MCP Server]
+[Client] <--SSE or HTTP--> [This Proxy] <--SSE or HTTP--> [MCP Server]
 ```
 
 The proxy handles:
-- SSE connection management
-- Session tracking
-- Request/response forwarding
-- Error handling
-- Connection heartbeats
+- Both SSE and HTTP connection management
+- Session tracking (persistent for SSE, ephemeral for HTTP)
+- Request/response forwarding with appropriate format conversion
+- Error handling across all transport types
+- Connection heartbeats for SSE
 
 ## API Endpoints
 
+### When Input Mode is SSE:
 - `GET /sse` - SSE connection endpoint
 - `POST /messages/:sessionId` - Message forwarding endpoint
-- `GET /health` - Health check endpoint (returns status, mode, and connection count)
+
+### When Input Mode is Streamable HTTP:
+- `POST /mcp` - Streamable HTTP endpoint
+
+### Always Available:
+- `GET /health` - Health check endpoint (returns status, input/output modes, and session count)
 
 ## Connecting Clients
 
-After starting the proxy, you can connect MCP SSE clients to it:
+### For SSE Clients (e.g., Claude.ai):
 
-1. The SSE endpoint will be available at: `http://localhost:3000/sse`
-2. When a client connects, they'll receive an `endpoint` event with the URL to send messages to
-3. The client should then POST JSON-RPC messages to the provided endpoint
+1. Start your MCP server
+2. Start the proxy with SSE input mode:
+   ```bash
+   npm run dev:sse-to-http  # For HTTP upstream
+   npm run dev:sse-to-sse   # For SSE upstream
+   ```
+3. Connect to: `http://localhost:3000/sse`
+4. When connected, you'll receive an `endpoint` event with the URL to send messages to
+5. POST JSON-RPC messages to the provided endpoint
 
-### Example with Claude.ai
+### For Streamable HTTP Clients:
 
-1. Start your MCP server (either streamable HTTP or SSE)
-2. Start this proxy server in the appropriate mode
-3. In Claude.ai, go to integrations
-4. Add the SSE endpoint URL: `http://localhost:3000/sse`
+1. Start your MCP server
+2. Start the proxy with HTTP input mode:
+   ```bash
+   npm run dev:http-to-http  # For HTTP upstream
+   npm run dev:http-to-sse   # For SSE upstream
+   ```
+3. POST JSON-RPC messages directly to: `http://localhost:3000/mcp`
+4. Responses will be streamed back in the HTTP response
 
 ## Error Handling
 
@@ -181,17 +225,22 @@ All errors are logged to the console and appropriate error responses are sent ba
 # Install dependencies
 npm install
 
-# Run in development mode (default: streamable)
+# Run in development mode (default: SSE → HTTP)
 npm run dev
 
-# Run in SSE mode
-npm run dev:sse
+# Run specific transport combinations
+npm run dev:sse-to-http    # SSE → HTTP
+npm run dev:sse-to-sse     # SSE → SSE
+npm run dev:http-to-http   # HTTP → HTTP
+npm run dev:http-to-sse    # HTTP → SSE
 
 # Build TypeScript
 npm run build
 
-# Run built version
-npm start
+# Run built version with specific modes
+npm run start:sse-to-http  # SSE → HTTP
+npm run start:http-to-sse  # HTTP → SSE
+# etc.
 ```
 
 ## Troubleshooting

@@ -1,21 +1,20 @@
-import { Response } from 'express';
 import axios from 'axios';
-import { ProxyStrategy, ProxyConfig } from './ProxyStrategy.js';
-import { LogCategory } from '../logger.js';
+import { OutputStrategy, OutputConfig } from './OutputStrategy.js';
+import { SessionInfo } from './InputStrategy.js';
 
-export class StreamableHttpStrategy implements ProxyStrategy {
+export class StreamableHttpOutputStrategy implements OutputStrategy {
   name = 'streamable';
-  private config!: ProxyConfig;
+  private config!: OutputConfig;
 
-  configure(config: ProxyConfig): void {
+  configure(config: OutputConfig): void {
     this.config = config;
   }
 
-  async handleMessage(sessionId: string, request: any, sseResponse: Response): Promise<void> {
+  async handleMessage(sessionInfo: SessionInfo, request: any): Promise<void> {
     try {
       const { jsonrpc, method, params, id } = request;
       
-      this.config.logger.request(`Received message from client ${sessionId}: ${method} (id: ${id})`, request);
+      this.config.logger.request(`Received message from client ${sessionInfo.sessionId}: ${method} (id: ${id})`, request);
       
       // Forward the request to the streamable endpoint
       const streamResponse = await this.sendToStreamableEndpoint(method, params, id);
@@ -31,9 +30,8 @@ export class StreamableHttpStrategy implements ProxyStrategy {
               const response = JSON.parse(line);
               this.config.logger.response(`Received from MCP server`, response);
               
-              // Send the response back through the SSE connection
-              sseResponse.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
-              this.config.logger.sse(`Sent to SSE client`, response);
+              // Send the response back through the input strategy
+              sessionInfo.inputStrategy.sendResponse(sessionInfo, response);
             } catch (parseError) {
               // If line is not valid JSON, skip it
               this.config.logger.debug(`Invalid JSON in stream response: ${line}`);
@@ -62,10 +60,10 @@ export class StreamableHttpStrategy implements ProxyStrategy {
           }
         };
         
-        sseResponse.write(`event: message\ndata: ${JSON.stringify(errorResponse)}\n\n`);
+        sessionInfo.inputStrategy.sendResponse(sessionInfo, errorResponse);
       });
     } catch (error: any) {
-      this.config.logger.error(`Error forwarding request from ${sessionId}`, error);
+      this.config.logger.error(`Error forwarding request from ${sessionInfo.sessionId}`, error);
       
       // Send error response through SSE
       const errorResponse = {
@@ -78,7 +76,7 @@ export class StreamableHttpStrategy implements ProxyStrategy {
         }
       };
       
-      sseResponse.write(`event: message\ndata: ${JSON.stringify(errorResponse)}\n\n`);
+      sessionInfo.inputStrategy.sendResponse(sessionInfo, errorResponse);
     }
   }
 
