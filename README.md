@@ -11,6 +11,7 @@ A flexible bidirectional proxy server that can translate between different MCP (
 - Bidirectional proxy supporting both SSE and streamable HTTP as input and output
 - All four transport combinations supported
 - Comprehensive logging with configurable levels and colors
+- Optional HTTP pass-through for non-MCP routes
 - Session management for concurrent connections
 - Heartbeat support for SSE connections
 - Error handling and graceful shutdown
@@ -71,9 +72,10 @@ Options:
   --endpoint       Upstream endpoint URL [string]
                    Default: http://localhost:8080/mcp (streamable output)
                            http://localhost:8080/sse (sse output)
-  --sse-endpoint   SSE endpoint path [string] [default: "/sse"]
-  --http-endpoint  HTTP endpoint path for streamable input [string] [default: "/mcp"]
-  --help           Show help [boolean]
+  --sse-endpoint       SSE endpoint path [string] [default: "/sse"]
+  --http-endpoint      HTTP endpoint path for streamable input [string] [default: "/mcp"]
+  --enable-passthrough Enable HTTP pass-through for non-MCP routes [boolean] [default: false]
+  --help               Show help [boolean]
 
 Examples:
   # SSE input to HTTP output on custom port
@@ -84,6 +86,9 @@ Examples:
 
   # Full HTTP proxy
   node dist/proxy.js --input-mode streamable --output-mode streamable
+  
+  # Enable pass-through for additional routes
+  node dist/proxy.js --enable-passthrough --endpoint http://localhost:8080/mcp
 ```
 
 ## Configuration
@@ -101,6 +106,7 @@ The proxy uses a flexible logging system that can be configured via `logging.con
     "FORWARD": { "enabled": true, "color": "yellow", "showPayload": true },
     "RESPONSE": { "enabled": true, "color": "magenta", "showPayload": true },
     "SSE": { "enabled": true, "color": "blue", "showPayload": false },
+    "HTTP": { "enabled": true, "color": "whiteBright", "showPayload": true },
     "ERROR": { "enabled": true, "color": "red", "showPayload": true },
     "DEBUG": { "enabled": false, "color": "gray", "showPayload": true },
     "SYSTEM": { "enabled": true, "color": "white", "showPayload": false }
@@ -170,6 +176,7 @@ The proxy handles:
 - Request/response forwarding with appropriate format conversion
 - Error handling across all transport types
 - Connection heartbeats for SSE
+- Optional HTTP pass-through for non-MCP routes to upstream server
 
 ## API Endpoints
 
@@ -182,6 +189,9 @@ The proxy handles:
 
 ### Always Available:
 - `GET /health` - Health check endpoint (returns status, input/output modes, and session count)
+
+### When Pass-through is Enabled:
+- Any other route - Proxied directly to the upstream server origin
 
 ## Connecting Clients
 

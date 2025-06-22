@@ -11,11 +11,11 @@
     "start:sse-to-sse": "node --experimental-specifier-resolution=node dist/proxy.js --input-mode sse --output-mode sse",
     "start:http-to-http": "node --experimental-specifier-resolution=node dist/proxy.js --input-mode streamable --output-mode streamable",
     "start:http-to-sse": "node --experimental-specifier-resolution=node dist/proxy.js --input-mode streamable --output-mode sse",
-    "dev": "tsx src/proxy.ts",
-    "dev:sse-to-http": "tsx src/proxy.ts --input-mode sse --output-mode streamable",
-    "dev:sse-to-sse": "tsx src/proxy.ts --input-mode sse --output-mode sse",
-    "dev:http-to-http": "tsx src/proxy.ts --input-mode streamable --output-mode streamable",
-    "dev:http-to-sse": "tsx src/proxy.ts --input-mode streamable --output-mode sse",
+    "dev": "tsx src/proxy.ts --enable-passthrough",
+    "dev:sse-to-http": "tsx src/proxy.ts --input-mode sse --output-mode streamable --enable-passthrough",
+    "dev:sse-to-sse": "tsx src/proxy.ts --input-mode sse --output-mode sse --enable-passthrough",
+    "dev:http-to-http": "tsx src/proxy.ts --input-mode streamable --output-mode streamable --enable-passthrough",
+    "dev:http-to-sse": "tsx src/proxy.ts --input-mode streamable --output-mode sse --enable-passthrough",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [

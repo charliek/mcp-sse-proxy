@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
+import axios from 'axios';
 import { logger, LogCategory } from './logger.js';
 import { InputStrategy, SessionInfo, InputConfig } from './strategies/InputStrategy.js';
 import { OutputStrategy, OutputConfig } from './strategies/OutputStrategy.js';
@@ -42,6 +43,11 @@ const argv = yargs(hideBin(process.argv))
     type: 'string',
     default: '/mcp',
     description: 'HTTP endpoint path for streamable input'
+  })
+  .option('enable-passthrough', {
+    type: 'boolean',
+    default: false,
+    description: 'Enable HTTP pass-through for non-MCP routes'
   })
   .help()
   .argv as any;
@@ -128,11 +134,80 @@ async function main() {
         status: 'healthy', 
         inputMode: argv.inputMode,
         outputMode: argv.outputMode,
-        sessions: sessions.size 
+        sessions: sessions.size,
+        passthrough: argv.enablePassthrough
       };
       logger.debug('Health check requested', status);
       res.json(status);
     });
+
+    // HTTP pass-through proxy for non-MCP routes (if enabled)
+    if (argv.enablePassthrough) {
+      const upstreamOrigin = new URL(endpoint).origin;
+      
+      app.use(async (req: Request, res: Response) => {
+        const targetUrl = new URL(req.originalUrl, upstreamOrigin).toString();
+        try {
+          logger.http(`Proxying ${req.method} ${req.originalUrl} -> ${targetUrl}`, 
+            req.method !== 'GET' ? req.body : undefined);
+
+          const response = await axios.request({
+            url: targetUrl,
+            method: req.method as any,
+            headers: { 
+              ...req.headers, 
+              host: new URL(upstreamOrigin).host,
+              // Remove headers that might cause issues
+              'content-length': undefined,
+              'transfer-encoding': undefined
+            },
+            data: req.body,
+            responseType: 'stream',
+            validateStatus: () => true // Accept any status code
+          });
+
+          // Log response status
+          logger.http(`Proxy response: ${response.status} ${response.statusText}`);
+
+          // Forward status and headers
+          res.status(response.status);
+          Object.entries(response.headers).forEach(([key, value]) => {
+            if (value !== undefined) {
+              res.setHeader(key, value as any);
+            }
+          });
+
+          // Stream the response
+          response.data.pipe(res);
+          
+          // Handle stream errors
+          response.data.on('error', (error: any) => {
+            logger.error(`Stream error during proxy`, error);
+            if (!res.headersSent) {
+              res.status(502).json({ error: 'Proxy stream error' });
+            }
+          });
+        } catch (error: any) {
+          logger.error(`Error proxying request to ${targetUrl}`, {
+            message: error.message,
+            code: error.code,
+            response: error.response?.status
+          });
+          
+          if (!res.headersSent) {
+            if (error.code === 'ECONNREFUSED') {
+              res.status(503).json({ error: 'Upstream server unavailable' });
+            } else if (error.code === 'ETIMEDOUT') {
+              res.status(504).json({ error: 'Gateway timeout' });
+            } else {
+              res.status(502).json({ error: 'Proxy error' });
+            }
+          }
+        }
+      });
+      
+      logger.system('HTTP pass-through enabled for non-MCP routes');
+    }
 
     // Start the server
     app.listen(port, '0.0.0.0', () => {
