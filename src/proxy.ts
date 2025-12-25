@@ -2,19 +2,12 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { logger, LogCategory } from './logger.js';
-import { ProxyStrategy, ProxyConfig } from './strategies/ProxyStrategy.js';
-import { StreamableHttpStrategy } from './strategies/StreamableHttpStrategy.js';
-import { SSEToSSEStrategy } from './strategies/SSEToSSEStrategy.js';
+import { logger } from './logger.js';
+import { ProxyConfig } from './strategies/ProxyStrategy.js';
+import { HttpTransportStrategy } from './strategies/HttpTransportStrategy.js';
 
 // Parse command-line arguments
 const argv = yargs(hideBin(process.argv))
-  .option('mode', {
-    type: 'string',
-    choices: ['streamable', 'sse'],
-    default: 'streamable',
-    description: 'Proxy mode: streamable (HTTP) or sse (SSE-to-SSE)'
-  })
   .option('port', {
     type: 'number',
     default: 3000,
@@ -22,184 +15,150 @@ const argv = yargs(hideBin(process.argv))
   })
   .option('endpoint', {
     type: 'string',
-    description: 'Upstream endpoint URL'
+    default: 'http://localhost:8080/mcp',
+    description: 'Upstream MCP server endpoint URL'
   })
-  .option('sse-endpoint', {
+  .option('path', {
     type: 'string',
-    default: '/sse',
-    description: 'SSE endpoint path'
+    default: '/mcp',
+    description: 'HTTP endpoint path for MCP requests'
   })
   .help()
   .argv as any;
 
-// Default endpoints based on mode
-const DEFAULT_ENDPOINTS: Record<string, string> = {
-  streamable: 'http://localhost:8080/mcp',
-  sse: 'http://localhost:8080/mcp'
-};
-
-const endpoint = argv.endpoint || DEFAULT_ENDPOINTS[argv.mode];
 const port = argv.port;
-const sseEndpoint = argv.sseEndpoint;
+const upstreamEndpoint = argv.endpoint;
+const mcpPath = argv.path;
 
 // Create Express app
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: (origin, callback) => {
+    // Accept requests from localhost or same origin
+    // This helps prevent DNS rebinding attacks
+    if (!origin || origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
+      callback(null, true);
+    } else {
+      logger.debug(`Blocked request from origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
 app.use(express.json({ limit: '50mb' }));
 
-// Store active SSE connections and their associated info
-interface ConnectionInfo {
-  response: Response;
+// Store session information if needed
+interface SessionInfo {
   sessionId: string;
-  strategy: ProxyStrategy;
+  createdAt: Date;
 }
 
-const connections = new Map<string, ConnectionInfo>();
-
-// Select strategy based on mode
-function createStrategy(mode: string): ProxyStrategy {
-  switch (mode) {
-    case 'sse':
-      return new SSEToSSEStrategy();
-    case 'streamable':
-    default:
-      return new StreamableHttpStrategy();
-  }
-}
+const sessions = new Map<string, SessionInfo>();
 
 async function main() {
   try {
-    logger.system(`Starting MCP proxy in ${argv.mode} mode on port ${port}`);
-    logger.system(`SSE endpoint: http://localhost:${port}${sseEndpoint}`);
-    logger.system(`Upstream endpoint: ${endpoint}`);
+    logger.system(`Starting MCP HTTP proxy on port ${port}`);
+    logger.system(`MCP endpoint: http://localhost:${port}${mcpPath}`);
+    logger.system(`Upstream endpoint: ${upstreamEndpoint}`);
 
-    // Create strategy instance
-    const strategy = createStrategy(argv.mode);
+    // Create HTTP transport strategy
+    const strategy = new HttpTransportStrategy();
     const config: ProxyConfig = {
-      endpoint,
+      endpoint: upstreamEndpoint,
       port,
-      sseEndpoint,
+      sseEndpoint: mcpPath, // Reusing this field for the HTTP endpoint path
       logger
     };
     strategy.configure(config);
 
-    // SSE endpoint for MCP clients to connect to
-    app.get(sseEndpoint, async (req: Request, res: Response) => {
-      const sessionId = Date.now().toString();
-      logger.connection(`New SSE connection initiated: ${sessionId}`);
-      
-      // Set SSE headers
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no' // Disable nginx buffering
-      });
-      
-      try {
-        // Store the connection
-        const connectionInfo: ConnectionInfo = {
-          response: res,
-          sessionId,
-          strategy
-        };
-        connections.set(sessionId, connectionInfo);
-        
-        // Send initial endpoint event (MCP SSE protocol)
-        const endpointPath = `messages/${sessionId}`;
-        const endpointEvent = `event: endpoint\ndata: ${endpointPath}\n\n`;
-        res.write(endpointEvent);
-        
-        logger.connection(`Client ${sessionId} connected`);
-        logger.sse(`Sent SSE endpoint event`, { event: 'endpoint', data: endpointPath });
-        
-        // Let the strategy handle the connection if needed
-        if (strategy.handleConnection) {
-          await strategy.handleConnection(sessionId, res);
-        }
-        
-        // Keep the connection alive
-        const heartbeatInterval = setInterval(() => {
-          if (res.socket?.destroyed) {
-            clearInterval(heartbeatInterval);
-          } else {
-            res.write(':ping\n\n');
-            logger.debug(`Sent heartbeat to ${sessionId}`);
+    /**
+     * MCP HTTP endpoint - supports both POST and GET
+     *
+     * POST: Client sends JSON-RPC messages
+     * GET: Client opens SSE stream for server-initiated messages
+     */
+    app.post(mcpPath, async (req: Request, res: Response) => {
+      // Validate MCP-Protocol-Version header
+      const protocolVersion = req.headers['mcp-protocol-version'];
+      if (!protocolVersion) {
+        logger.error(`Missing MCP-Protocol-Version header`);
+        return res.status(400).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32600,
+            message: 'Missing MCP-Protocol-Version header'
           }
-        }, 30000); // Send heartbeat every 30 seconds
-        
-        // Handle client disconnect
-        req.on('close', () => {
-          clearInterval(heartbeatInterval);
-          connections.delete(sessionId);
-          logger.connection(`Client ${sessionId} disconnected`);
         });
-      } catch (error: any) {
-        logger.error(`Failed to setup SSE connection for ${sessionId}`, {
-          message: error.message,
-          stack: error.stack,
-          name: error.name
-        });
-        res.write(`event: error\ndata: ${JSON.stringify({ error: error.message || 'Failed to setup connection' })}\n\n`);
-        res.end();
-        return;
       }
+
+      // Get session ID if present
+      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+      if (sessionId && !sessions.has(sessionId)) {
+        logger.error(`Invalid session ID: ${sessionId}`);
+        return res.status(404).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32001,
+            message: 'Session not found'
+          }
+        });
+      }
+
+      await strategy.handlePost(req, res, sessionId);
     });
 
-    // Endpoint for receiving messages from SSE client
-    app.post('/messages/:sessionId', async (req: Request, res: Response) => {
-      const { sessionId } = req.params;
-      const connection = connections.get(sessionId);
-      
-      if (!connection) {
-        logger.error(`Session not found: ${sessionId}`);
-        return res.status(404).json({ error: 'Session not found' });
+    app.get(mcpPath, async (req: Request, res: Response) => {
+      // Validate Accept header
+      const accept = req.headers['accept'];
+      if (!accept?.includes('text/event-stream')) {
+        logger.error(`GET request without text/event-stream Accept header`);
+        return res.status(406).send('Not Acceptable - requires Accept: text/event-stream');
       }
-      
-      try {
-        // Let the strategy handle the message
-        await connection.strategy.handleMessage(sessionId, req.body, connection.response);
-        
-        // Respond to the POST request with empty 202 as per MCP SSE spec
-        res.status(202).send();
-      } catch (error) {
-        logger.error(`Error handling message from ${sessionId}`, error);
-        res.status(202).send();
+
+      // Validate MCP-Protocol-Version header
+      const protocolVersion = req.headers['mcp-protocol-version'];
+      if (!protocolVersion) {
+        logger.error(`Missing MCP-Protocol-Version header`);
+        return res.status(400).send('Missing MCP-Protocol-Version header');
       }
+
+      // Get session ID if present
+      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+      if (sessionId && !sessions.has(sessionId)) {
+        logger.error(`Invalid session ID: ${sessionId}`);
+        return res.status(404).send('Session not found');
+      }
+
+      await strategy.handleGet(req, res, sessionId);
     });
 
     // Health check endpoint
     app.get('/health', (req: Request, res: Response) => {
-      const status = { 
-        status: 'healthy', 
-        mode: argv.mode,
-        connections: connections.size 
+      const status = {
+        status: 'healthy',
+        mode: 'http',
+        sessions: sessions.size,
+        upstreamEndpoint
       };
       logger.debug('Health check requested', status);
       res.json(status);
     });
 
-    // Start the server
-    app.listen(port, '0.0.0.0', () => {
-      logger.system(`Proxy server running on http://0.0.0.0:${port}`);
-      logger.system(`SSE endpoint: http://0.0.0.0:${port}${sseEndpoint}`);
-      logger.system(`Mode: ${argv.mode}`);
+    // Start the server - bind to localhost only for security
+    app.listen(port, '127.0.0.1', () => {
+      logger.system(`MCP HTTP proxy running on http://127.0.0.1:${port}`);
+      logger.system(`MCP endpoint: http://127.0.0.1:${port}${mcpPath}`);
+      logger.system(`Protocol: Streamable HTTP (MCP 2025-06-18)`);
     });
-    
+
     // Handle shutdown
     process.on("SIGINT", async () => {
       logger.system("Shutting down proxy...");
-      
-      // Let strategies clean up
-      const strategies = new Set([...connections.values()].map(c => c.strategy));
-      for (const s of strategies) {
-        if (s.shutdown) {
-          await s.shutdown();
-        }
-      }
-      
       process.exit(0);
     });
+
   } catch (error) {
     logger.error("Error starting proxy", error);
     process.exit(1);
@@ -208,4 +167,5 @@ async function main() {
 
 main().catch((error) => {
   logger.error("Fatal error", error);
+  process.exit(1);
 });

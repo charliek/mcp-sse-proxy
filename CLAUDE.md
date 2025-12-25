@@ -15,47 +15,74 @@ This project currently lacks linting and formatting configuration.
 
 ## Architecture Overview
 
-This is a proxy server that translates between MCP (Model Context Protocol) SSE (Server-Sent Events) transport and streamable HTTP transport.
+This is a proxy server that implements the MCP (Model Context Protocol) Streamable HTTP transport specification (version 2025-06-18) to forward requests between MCP clients and servers.
 
 ### Core Flow
-1. SSE clients connect to `/sse` endpoint
-2. Server creates a session and sends an `endpoint` event with the path `messages/{sessionId}`
-3. Clients POST JSON-RPC messages to `/messages/{sessionId}`
-4. Proxy forwards requests to the streamable HTTP MCP server at `http://localhost:8080/mcp`
-5. Streaming responses are sent back to the client through the SSE connection
+1. MCP clients send HTTP POST requests to `/mcp` endpoint with JSON-RPC messages
+2. Proxy validates `MCP-Protocol-Version` header
+3. Proxy forwards the request to the upstream MCP server
+4. Responses are returned either as:
+   - HTTP 202 Accepted (for notifications/responses)
+   - SSE stream (text/event-stream) for streaming responses
+   - JSON response (application/json) for single responses
+5. MCP clients can also send HTTP GET requests to `/mcp` to open SSE streams for server-initiated messages
 
 ### Key Components
-- **Express Server**: Handles SSE connections and HTTP POST requests
-- **Session Management**: Maps session IDs to SSE response objects
+- **Express Server**: Handles HTTP POST and GET requests following MCP specification
+- **Session Management**: Optional session tracking via `Mcp-Session-Id` header
 - **Stream Forwarding**: Uses Axios to forward requests and handle streaming responses
-- **Connection Lifecycle**: Includes heartbeats, disconnection handling, and graceful shutdown
+- **HttpTransportStrategy**: Implements the MCP Streamable HTTP transport logic
+- **Logger**: Configurable logging system with categories and payload display
 
 ### Configuration Points
-All configuration is hardcoded in `src/proxy.ts`:
-- `STREAMABLE_HTTP_ENDPOINT`: "http://localhost:8080/mcp"
-- `SSE_PORT`: 3000
-- `SSE_ENDPOINT`: "/sse"
+All configuration is via command-line arguments:
+- `--endpoint`: Upstream MCP server URL (default: "http://localhost:8080/mcp")
+- `--port`: Port to listen on (default: 3000)
+- `--path`: HTTP endpoint path for MCP requests (default: "/mcp")
 
 ### Important Routes
-- `GET /sse` - SSE connection endpoint
-- `POST /messages/:sessionId` - Message forwarding endpoint
+- `POST /mcp` - Main MCP endpoint for JSON-RPC messages
+- `GET /mcp` - SSE stream endpoint for server-initiated messages
 - `GET /health` - Health check endpoint
 
 ## Development Notes
 
 ### Running the Proxy
-1. Ensure your MCP server is running at `http://localhost:8080/mcp`
+1. Ensure your upstream MCP server is running at `http://localhost:8080/mcp` (or specify with `--endpoint`)
 2. Run `npm run dev` for development
-3. Server will listen on `http://localhost:3000`
+3. Server will listen on `http://127.0.0.1:3000` (localhost only for security)
 
-### Claude.ai Integration
-When setting up with Claude.ai:
-- Use the full SSE endpoint URL (e.g., `https://your-domain.com/sse`)
-- The proxy handles endpoint discovery automatically
-- Messages are routed through relative paths
+### MCP Protocol Requirements
+- All requests must include `MCP-Protocol-Version: 2025-06-18` header
+- POST requests must include `Accept: application/json, text/event-stream` header
+- GET requests must include `Accept: text/event-stream` header
+- Optional `Mcp-Session-Id` header for stateful sessions
+
+### Security
+- Server binds to 127.0.0.1 (localhost) by default
+- CORS validation prevents DNS rebinding attacks
+- Only accepts requests from localhost origins
 
 ### Error Handling
 - Connection failures are logged and appropriate error responses sent
 - Stream errors are caught and forwarded to clients
 - Invalid sessions return 404 errors
-- All errors include stack traces in development
+- Missing protocol version returns 400 errors
+- All errors include detailed logging
+
+### File Structure
+- `src/proxy.ts` - Main server implementation
+- `src/strategies/HttpTransportStrategy.ts` - MCP HTTP transport implementation
+- `src/strategies/ProxyStrategy.ts` - Strategy interface
+- `src/logger.ts` - Logging system
+
+## Specification Compliance
+
+This proxy follows the MCP Streamable HTTP transport specification:
+- https://modelcontextprotocol.io/specification/2025-06-18/basic/transports
+
+Key features:
+- Single HTTP endpoint supporting both POST and GET methods
+- Protocol version validation
+- Session management via headers
+- SSE streaming support for both request responses and server-initiated messages
