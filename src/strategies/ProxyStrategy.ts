@@ -11,6 +11,6 @@ export interface ProxyStrategy {
 export interface ProxyConfig {
   endpoint: string;
   port: number;
-  sseEndpoint: string;
+  mcpPath: string;
   logger: any;
 }
