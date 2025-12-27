@@ -173,6 +173,7 @@ export class HttpTransportStrategy implements ProxyStrategy {
       this.config.logger.connection(`Opening SSE stream for server-initiated messages`);
 
       // Forward GET request to upstream server
+      // Note: No timeout for SSE streams - they are long-lived connections
       const response = await axios.get(this.config.endpoint, {
         headers: {
           'Accept': 'text/event-stream',
@@ -180,7 +181,7 @@ export class HttpTransportStrategy implements ProxyStrategy {
           ...(sessionId && { 'Mcp-Session-Id': sessionId })
         },
         responseType: 'stream',
-        timeout: 30000, // 30 second timeout
+        timeout: 0, // No timeout for long-lived SSE streams
         validateStatus: (status) => status >= 200 && status < 500
       });
 
