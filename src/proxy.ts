@@ -36,10 +36,23 @@ app.use(cors({
   origin: (origin, callback) => {
     // Accept requests from localhost or same origin
     // This helps prevent DNS rebinding attacks
-    if (!origin || origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
+    if (!origin) {
       callback(null, true);
-    } else {
-      logger.debug(`Blocked request from origin: ${origin}`);
+      return;
+    }
+
+    // Validate exact localhost/127.0.0.1 origins with proper port validation
+    try {
+      const url = new URL(origin);
+      const isLocalhost = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+      if (isLocalhost) {
+        callback(null, true);
+      } else {
+        logger.debug(`Blocked request from origin: ${origin}`);
+        callback(new Error('Not allowed by CORS'));
+      }
+    } catch (error) {
+      logger.debug(`Invalid origin format: ${origin}`);
       callback(new Error('Not allowed by CORS'));
     }
   },
@@ -47,13 +60,8 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '50mb' }));
 
-// Store session information if needed
-interface SessionInfo {
-  sessionId: string;
-  createdAt: Date;
-}
-
-const sessions = new Map<string, SessionInfo>();
+// Note: Session management is handled by the upstream MCP server
+// This proxy simply forwards session IDs without validation
 
 async function main() {
   try {
@@ -66,7 +74,7 @@ async function main() {
     const config: ProxyConfig = {
       endpoint: upstreamEndpoint,
       port,
-      sseEndpoint: mcpPath, // Reusing this field for the HTTP endpoint path
+      mcpPath,
       logger
     };
     strategy.configure(config);
@@ -91,19 +99,9 @@ async function main() {
         });
       }
 
-      // Get session ID if present
+      // Get session ID if present and pass it through to upstream
+      // The proxy doesn't validate sessions - the upstream server handles that
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
-
-      if (sessionId && !sessions.has(sessionId)) {
-        logger.error(`Invalid session ID: ${sessionId}`);
-        return res.status(404).json({
-          jsonrpc: '2.0',
-          error: {
-            code: -32001,
-            message: 'Session not found'
-          }
-        });
-      }
 
       await strategy.handlePost(req, res, sessionId);
     });
@@ -123,13 +121,9 @@ async function main() {
         return res.status(400).send('Missing MCP-Protocol-Version header');
       }
 
-      // Get session ID if present
+      // Get session ID if present and pass it through to upstream
+      // The proxy doesn't validate sessions - the upstream server handles that
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
-
-      if (sessionId && !sessions.has(sessionId)) {
-        logger.error(`Invalid session ID: ${sessionId}`);
-        return res.status(404).send('Session not found');
-      }
 
       await strategy.handleGet(req, res, sessionId);
     });
@@ -139,7 +133,6 @@ async function main() {
       const status = {
         status: 'healthy',
         mode: 'http',
-        sessions: sessions.size,
         upstreamEndpoint
       };
       logger.debug('Health check requested', status);

@@ -29,7 +29,7 @@ export class HttpTransportStrategy implements ProxyStrategy {
   async handlePost(req: Request, res: Response, sessionId?: string): Promise<void> {
     try {
       const message = req.body;
-      const { jsonrpc, method, params, id } = message;
+      const { method, id } = message;
 
       this.config.logger.request(
         `Received ${id !== undefined ? 'request' : 'notification'}: ${method || 'response'}${id !== undefined ? ` (id: ${id})` : ''}`,
@@ -47,6 +47,7 @@ export class HttpTransportStrategy implements ProxyStrategy {
           ...(sessionId && { 'Mcp-Session-Id': sessionId })
         },
         responseType: 'stream',
+        timeout: 30000, // 30 second timeout
         validateStatus: (status) => status >= 200 && status < 500
       });
 
@@ -147,15 +148,14 @@ export class HttpTransportStrategy implements ProxyStrategy {
         response: error.response?.data
       });
 
-      // Return JSON-RPC error
+      // Return JSON-RPC error (without stack trace for security)
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: '2.0',
           id: req.body.id,
           error: {
             code: -32603,
-            message: error.message || 'Internal error',
-            data: error.stack
+            message: error.message || 'Internal error'
           }
         });
       }
@@ -180,6 +180,7 @@ export class HttpTransportStrategy implements ProxyStrategy {
           ...(sessionId && { 'Mcp-Session-Id': sessionId })
         },
         responseType: 'stream',
+        timeout: 30000, // 30 second timeout
         validateStatus: (status) => status >= 200 && status < 500
       });
 
