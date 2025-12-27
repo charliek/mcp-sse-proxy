@@ -61,9 +61,9 @@ export class HttpTransportStrategy implements ProxyStrategy {
 
       // If upstream returns SSE stream, forward it
       if (contentType?.includes('text/event-stream')) {
-        this.config.logger.response(`Upstream returned SSE stream`);
+        this.config.logger.response(`Upstream returned SSE stream with status ${response.status}`);
 
-        res.writeHead(200, {
+        res.writeHead(response.status, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           'Connection': 'keep-alive'
@@ -108,8 +108,8 @@ export class HttpTransportStrategy implements ProxyStrategy {
           const data = Buffer.concat(chunks).toString();
           try {
             const jsonResponse = JSON.parse(data);
-            this.config.logger.response(`Upstream returned JSON`, jsonResponse);
-            res.json(jsonResponse);
+            this.config.logger.response(`Upstream returned JSON with status ${response.status}`, jsonResponse);
+            res.status(response.status).json(jsonResponse);
           } catch (error) {
             this.config.logger.error(`Failed to parse JSON response`, error);
             res.status(500).json({
@@ -191,12 +191,19 @@ export class HttpTransportStrategy implements ProxyStrategy {
         return;
       }
 
+      // Handle other non-2xx status codes
+      if (response.status < 200 || response.status >= 300) {
+        this.config.logger.error(`Upstream returned error status ${response.status} for GET request`);
+        res.status(response.status).send(`Upstream error: ${response.statusText || response.status}`);
+        return;
+      }
+
       const mcpSessionId = response.headers['mcp-session-id'];
       if (mcpSessionId) {
         res.setHeader('Mcp-Session-Id', mcpSessionId);
       }
 
-      res.writeHead(200, {
+      res.writeHead(response.status, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive'
